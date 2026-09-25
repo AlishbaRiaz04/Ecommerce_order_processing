@@ -14,6 +14,7 @@ def validate_data(data):
     if not isinstance(data.get("orders"), list):
         raise ValueError("Orders must be a list")
 
+
     if not isinstance(data.get("products"), dict):
         raise ValueError("Products must be a dictionary")
 
@@ -50,6 +51,34 @@ class Order:
 # ORDER VALIDATION
 # =========================
 
+def create_products(products):
+    product_objects = {}
+
+    for product_id, product_data in products.items():
+        product = Product(id=product_id, **product_data)
+        product_objects[product_id] = product
+
+    return product_objects
+
+def create_orders(orders):
+    order_objects = []
+
+    for order_data in orders:
+        item_objects = [
+            OrderItem(**item_data)
+            for item_data in order_data["items"]
+        ]
+
+        new_data = {
+            **order_data,
+            "items": item_objects
+        }
+
+        order = Order(**new_data)
+        order_objects.append(order)
+
+    return order_objects
+
 def validate_order(order, products):
 
     if not order.items:
@@ -73,7 +102,7 @@ def validate_order(order, products):
         if product is None:
             return False, f"Unknown product ID: {product_id}"
 
-        if quantity is None or quantity <= 0:
+        if quantity <= 0:
             return False, "Quantity must be positive"
 
         if quantity > product.stock:
@@ -123,10 +152,6 @@ def calculate_shipping(subtotal):
     return 20
 
 
-def calculate_total(*amounts):
-
-    return sum(amounts)
-
 
 # =========================
 # ORDER PROCESSING
@@ -162,11 +187,7 @@ def process_order(order, products, **options):
     else:
         shipping_fee = 0
 
-    grand_total = calculate_total(
-        subtotal,
-        shipping_fee,
-        -discount_amount
-    )
+    grand_total = subtotal+shipping_fee-discount_amount
 
     if order.payment_status == "paid":
 
@@ -217,35 +238,25 @@ def process_all_orders(orders, products, **options):
 # =========================
 
 def generate_customer_report(processed_orders):
+    customer_orders = {}
 
-    unique_customers = {
-        order["customer"]
-        for order in processed_orders
-    }
+    for order in processed_orders:
+        customer = order["customer"]
 
-    customer_orders = {
-        customer: sum(
-            1
-            for order in processed_orders
-            if order["customer"] == customer
-        )
-        for customer in unique_customers
-    }
+        if customer not in customer_orders:
+            customer_orders[customer] = 1
+        else:
+            customer_orders[customer] += 1
 
     if not customer_orders:
-        return None, 0, unique_customers
+        return None, 0
 
-    sorted_customers = sorted(
+    top_customer, highest_orders = max(
         customer_orders.items(),
-        key=lambda item: item[1],
-        reverse=True
+        key=lambda item: item[1]
     )
 
-    top_customer, highest_orders = sorted_customers[0]
-
-    return top_customer, highest_orders, unique_customers
-
-
+    return top_customer, highest_orders
 # =========================
 # PRODUCT REPORT
 # =========================
@@ -282,9 +293,7 @@ def generate_product_report(
             if units == highest_units
         ]
 
-        top_selling.sort(
-            key=lambda product_id: product_id
-        )
+        top_selling.sort()
 
     else:
         highest_units = 0
@@ -296,16 +305,10 @@ def generate_product_report(
         if product.stock < low_stock_threshold
     ]
 
-    categories = {
-        product.category
-        for product in products.values()
-    }
-
     return (
         top_selling,
         highest_units,
         low_stock,
-        categories
     )
 
 
@@ -317,52 +320,29 @@ def generate_sales_report(
     processed_orders,
     products,
     top_customer,
-    highest_orders,
     top_selling,
     highest_units,
     low_stock
 ):
 
     total_orders = len(processed_orders)
+    paid_orders=0
+    pending_orders=0
+    rejected_orders=0
+    total_revenue=0
+    total_discount=0
+    shipping_collected=0
+    for order in processed_orders:
+        if order["processing_status"] == "completed":
+            total_revenue += order["grand_total"]
+            total_discount += order["discount_amount"]
+            shipping_collected += order["shipping_fee"]
+            paid_orders+=1
+        elif order["processing_status"] == "pending":
+            pending_orders+=1
+        elif order["processing_status"] == "rejected":
+            rejected_orders+=1
 
-    paid_orders = sum(
-        1
-        for order in processed_orders
-        if order["processing_status"] == "completed"
-    )
-
-    pending_orders = sum(
-        1
-        for order in processed_orders
-        if order["processing_status"] == "pending"
-    )
-
-    rejected_orders = sum(
-        1
-        for order in processed_orders
-        if order["processing_status"] == "rejected"
-    )
-
-    paid_results = [
-        order
-        for order in processed_orders
-        if order["processing_status"] == "completed"
-    ]
-
-    total_revenue = sum(
-        order["grand_total"]
-        for order in paid_results
-    )
-
-    total_discount = sum(
-        order["discount_amount"]
-        for order in paid_results
-    )
-
-    shipping_collected = sum(
-        order["shipping_fee"]
-        for order in paid_results
-    )
 
     print("\n========== SALES REPORT ==========")
 
@@ -456,74 +436,37 @@ def main():
         print(f"Error: {e}")
         return
 
-    products = data["products"]
-    orders = data["orders"]
 
     # Convert products to dataclass objects
-    product_objects = {}
-
-    for product_id, product_data in products.items():
-
-        product = Product(
-            product_id,
-            product_data["name"],
-            product_data["price"],
-            product_data["category"],
-            product_data["stock"]
-        )
-
-        product_objects[product_id] = product
+    products = create_products(data["products"])
 
     # Convert orders to dataclass objects
-    order_objects = []
-
-    for order_data in orders:
-
-        item_objects = []
-
-        for item_data in order_data["items"]:
-
-            item = OrderItem(
-                item_data["product_id"],
-                item_data["quantity"]
-            )
-
-            item_objects.append(item)
-
-        order = Order(
-            order_data["order_id"],
-            order_data["customer"],
-            item_objects,
-            order_data["payment_status"]
-        )
-
-        order_objects.append(order)
+    orders = create_orders(data["orders"])
 
     # Process orders
     processed_orders = process_all_orders(
-        order_objects,
-        product_objects,
+        orders,
+        products,
         include_shipping=True,
         apply_discount=True
     )
 
     # Generate reports
-    top_customer, highest_orders, unique_customers = (
+    top_customer = (
         generate_customer_report(processed_orders)
     )
 
-    top_selling, highest_units, low_stock, categories = (
+    top_selling, highest_units, low_stock = (
         generate_product_report(
             processed_orders,
-            product_objects
+            products
         )
     )
 
     generate_sales_report(
         processed_orders,
-        product_objects,
+        products,
         top_customer,
-        highest_orders,
         top_selling,
         highest_units,
         low_stock
